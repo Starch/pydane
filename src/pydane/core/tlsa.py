@@ -34,9 +34,9 @@ class TLSAValidator(object):
     """Checks a certificate against some associated TLSA records."""
     ALGO = {FULL: None, SHA256: 'sha256', SHA512: 'sha512'}
 
-    def __init__(self, records):
+    def __init__(self, records, secure=False):
         self.records = records
-        self.secure = records.response.flags & flags.AD == flags.AD
+        self.secure = secure
 
     def get_algo(self, record):
         try:
@@ -91,10 +91,13 @@ def get_records(host, port, proto='tcp'):
         resolver.set_flags(flags.CD + flags.RD)
         rrset = resolver.query(name, rdtype=rdatatype.TLSA)
         log.debug('Without validation we have an answer: %s', rrset)
-        for record in rrset:
-            log.debug(record)
 
-    if rrset.response.flags & flags.AD != flags.AD:
+    for record in rrset:
+        log.debug(record)
+
+    secure = rrset.response.flags & flags.AD == flags.AD
+
+    if not secure:
         log.warn('Not DNSSEC signed!')
 
-    return TLSAValidator(rrset)
+    return TLSAValidator([r for r in rrset], secure)
