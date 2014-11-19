@@ -69,7 +69,7 @@ class TLSAValidator(object):
                     break  # sufficient
 
             else:
-                log.debug('TLSA usage={} is not supported yet.', record.usage)
+                log.debug('TLSA usage=%s is not supported yet.', record.usage)
 
         return result
 
