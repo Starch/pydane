@@ -26,7 +26,8 @@ and imaplib.
 
 import logging
 import socket
-import ssl
+
+import pydane.core.ssl as ssl
 
 TIMEOUT = 5.0  # 5 seconds timeout
 
@@ -38,9 +39,18 @@ class ProtoConnectionError(OSError):
 
 class Proto(object):
     """Base class for text-line protocols."""
+
     def __init__(self, hostname, port):
         self.host = hostname
         self.port = port
+
+    def create_context(self):
+        # In a perfect world, we could have use directly the ssl implementation
+        # But we are not in a perfect world, and SSL is a PITA
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE  # we do not want the getpeercert to fail upon validation.
+        return context
 
     def get_certificate(self):
         pass
@@ -54,42 +64,48 @@ class SSL(Proto):
     When the protocol is entirely wrapped within TLS/SSL, we just
     need to wraps the socket and fetch back the peer certificate.
     """
+    protocol = ('https', 'imaps', 'pop3s')
+    ports = (443, 993, 995)
+
     def get_certificate(self):
-        context = ssl.create_default_context()
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE  # we do not want the getpeercert to fail upon validation.
+        context = self.create_context()
 
         with socket.create_connection((self.host, self.port), timeout=TIMEOUT) as sock:
             server_hostname = self.host if ssl.HAS_SNI else None
             with context.wrap_socket(sock, server_hostname=server_hostname) as sslsock:
-                return sslsock.getpeercert(True)
+                return sslsock.getpeercert(True), sslsock.getpeercertchain(True)
 
 
 class SMTP(Proto):
     """SMTP STARTTLS protocol."""
+    protocol = ('mx', 'submission')
+    ports = (25, 587)
+
     def get_certificate(self):
-        context = ssl.create_default_context()
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE  # we do not want the getpeercert to fail upon validation.
+        context = self.create_context()
 
         from smtplib import SMTP
+
         with SMTP(self.host, self.port, timeout=TIMEOUT) as smtp:
             smtp.starttls(context=context)
-            return smtp.sock.getpeercert(True)
+            return smtp.sock.getpeercert(True), smtp.sock.getpeercertchain(True)
 
 
 class IMAP(Proto):
     """IMAP STARTTLS protocol."""
+    protocol = ('imap', )
+    ports = (143, )
+
     def get_certificate(self):
-        context = ssl.create_default_context()
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE  # we do not want the getpeercert to fail upon validation.
+        context = self.create_context()
 
         from imaplib import IMAP4
+
         try:
             imap = IMAP4(host=self.host, port=self.port)
             imap.starttls(ssl_context=context)
-            return imap.socket().getpeercert(True)
+            sock = imap.socket()
+            return sock.getpeercert(True), sock.getpeercertchain(True)
         finally:
             try:
                 imap.logout()
@@ -100,14 +116,15 @@ class IMAP(Proto):
 
 class SIEVE(Proto):
     """SIEVE STARTTLS protocol."""
+    protocol = ('sieve', )
+    ports = (2000, 4190)
+
     def get_certificate(self):
-        context = ssl.create_default_context()
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE  # we do not want the getpeercert to fail upon validation.
+        context = self.create_context()
 
         with ManageSieve(self.host, self.port, timeout=TIMEOUT) as sieve:
             sieve.starttls(context=context)
-            return sieve.sock.getpeercert(True)
+            return sieve.sock.getpeercert(True), sieve.sock.getpeercertchain(True)
 
 
 class SIEVEException(OSError):
@@ -195,7 +212,7 @@ class ManageSieve(object):
         if self._tls_established:
             raise SIEVEException('TLS session already established')
         # if name not in self.capabilities:
-        #     raise self.abort('TLS not supported by server')
+        # raise self.abort('TLS not supported by server')
 
         if context is None:
             context = ssl._create_stdlib_context()
@@ -266,13 +283,26 @@ class ManageSieve(object):
 
         return typ, errmsg
 
-KNOWN_PROTOCOLS = {
-    25:   SMTP,
-    143:  IMAP,
-    443:  SSL,
-    465:  SSL,
-    587:  SMTP,
-    993:  SMTP,
-    2000: SIEVE,
-    4190: SIEVE,
-}
+
+def get_protocol(name=None, port=None):
+    import sys
+    import inspect
+
+    protos = inspect.getmembers(sys.modules[__name__],
+                                lambda o: inspect.isclass(o) and issubclass(o, Proto))
+
+    if name:
+        for _, proto in protos:
+            if hasattr(proto, 'protocol'):
+                if name in proto.protocol:
+                    return proto
+        return None
+
+    if port:
+        for _, proto in protos:
+            if hasattr(proto, 'ports'):
+                if port in proto.ports:
+                    return proto
+        return None
+
+    raise Exception('a port or a name should be given')

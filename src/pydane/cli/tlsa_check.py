@@ -20,35 +20,48 @@ from argparse import ArgumentParser
 
 from pydane.core import tlsa
 from pydane.core.cert import Certificate
-from pydane.core.proto import KNOWN_PROTOCOLS
+from pydane.core.proto import get_protocol
 
 log = logging.getLogger('tlsa_check')
+
+TRUSTED, INSECURE, UNTRUSTED = range(3)
+
+
+class ScriptError(Exception):
+    def __init__(self, status, msg):
+        super().__init__(msg)
+        self.status = status
 
 
 def check(proto):
     try:
         validator = tlsa.get_records(proto.host, proto.port)
     except Exception as e:
-        print('No TLSA record for {}: {}'.format(proto, e))
-        sys.exit(1)
+        return UNTRUSTED, 'No TLSA record for {}'.format(proto)
 
     try:
-        cert = Certificate(proto.get_certificate())
+        cert, chain = proto.get_certificate()
     except Exception as e:
-        print('Unable to get certificate from {}: {}'.format(proto, e))
-        sys.exit(1)
+        return UNTRUSTED, 'Unable to get certificate from {}: {}'.format(proto, e)
 
-    log.debug('Peer certificate:\n%s', cert.as_str())
-
-    if validator.validate(cert) == tlsa.TRUSTED:
-        print('Matching TLSA secure record for {}:{}'.format(proto.host, proto.port))
-        sys.exit(0)
-    elif validator.validate(cert) == tlsa.INSECURE:
-        print('Matching TLSA insecure record for {}:{}'.format(proto.host, proto.port))
-        sys.exit(2)
+    if cert:
+        cert = Certificate(cert)
     else:
-        print('No correct TLSA record for {}:{}'.format(proto.host, proto.port))
-        sys.exit(3)
+        raise ScriptError(1, 'Unable to get certificate from {}: {}'.format(proto, 'certificate is None'))
+
+    if chain:
+        chain = [Certificate(x) for x in chain]
+    else:
+        raise ScriptError(1, 'Unable to get chain from {}: {}'.format(proto, 'chain is None'))
+
+    result = validator.validate(cert)
+
+    if result == tlsa.TRUSTED:
+        return TRUSTED, 'Matching TLSA secure record for {}:{}'.format(proto.host, proto.port)
+    elif result == tlsa.INSECURE:
+        return INSECURE, 'Matching TLSA insecure record for {}:{}'.format(proto.host, proto.port)
+    else:
+        return UNTRUSTED, 'No correct TLSA record for {}:{}'.format(proto.host, proto.port)
 
 
 def tlsa_check():
@@ -61,15 +74,29 @@ def tlsa_check():
 
     if arguments.verbose:
         logging.basicConfig(level=logging.DEBUG, format='%(asctime)-15s [%(levelname)s] %(message)s')
+    else:
+        logging.basicConfig(level=logging.INFO, format='%(asctime)-15s [%(levelname)s] %(message)s')
 
     # FIXME we should try here to resolve hostname first with AD flag, then with CD
     # FIXME in order to work even if DNSSEC validation of host fails.
-    if arguments.port in KNOWN_PROTOCOLS:
-        proto = KNOWN_PROTOCOLS[arguments.port](arguments.hostname, arguments.port)
+    protocol = get_protocol(port=arguments.port)
+    if protocol:
+        proto = protocol(arguments.hostname, arguments.port)
     else:
         raise Exception('Protocol not yet managed: {}'.format(arguments.port))
 
-    check(proto)
+    status = -1
+    try:
+        status, m = check(proto)
+        if status == 0:
+            log.info(m)
+        else:
+            log.warn(m)
+    except ScriptError as se:
+        print(se)
+        sys.exit(se.status)
+    else:
+        sys.exit(status)
 
 
 if __name__ == '__main__':
