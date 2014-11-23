@@ -14,7 +14,15 @@
 # OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
 # CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
-from setuptools import setup, find_packages
+from setuptools import setup, find_packages, Extension
+
+customssl = Extension('pydane.core.customssl',
+                      define_macros=[('MAJOR_VERSION', '1'),
+                                     ('MINOR_VERSION', '0')],
+                      include_dirs=['/usr/local/include'],
+                      libraries=['crypto', 'ssl'],
+                      library_dirs=['/usr/local/lib'],
+                      sources=['c/pydane/core/customssl.c'])
 
 setup(
     name='pydane',
@@ -36,10 +44,13 @@ setup(
         'Programming Language :: Python :: 3.4',
     ],
 
-    keywords='dnssec dane tlsa',
+    keywords='dnssec dane tlsa pkix ssl',
 
     packages=find_packages(),
-    package_dir={'': 'src'},
+    package_dir={'': 'src', 'tests': '.'},
+    test_suite='tests',
+
+    ext_modules=[customssl],
 
     install_requires=['dnspython3', 'pyopenssl', 'pycrypto'],
 
